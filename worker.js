@@ -8,9 +8,10 @@ const LEAGUES = [
   ['uefa.europa', 'Europa League']
 ];
 
+const CACHE_TTL_SECONDS = 60 * 60 * 6;
 const json = (body, status = 200, extra = {}) => new Response(JSON.stringify(body), {
   status,
-  headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...extra }
+  headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': `public, max-age=${CACHE_TTL_SECONDS}`, ...extra }
 });
 
 function normalizeEvent(event, leagueName) {
@@ -48,6 +49,27 @@ function addDays(dateString, days) {
   return d.toISOString().slice(0, 10);
 }
 
+function cacheKey(startDate) {
+  return new Request(`https://statkick.internal/api/fixtures?date=${startDate}&days=7`);
+}
+
+async function fetchFresh(startDate, days) {
+  const endDate = addDays(startDate, days - 1);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const results = await Promise.allSettled(
+      LEAGUES.map(([code, name]) => fetchLeague(code, name, startDate, endDate, controller.signal))
+    );
+    const matches = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
+    const unique = [...new Map(matches.map(m => [m.external_id, m])).values()];
+    unique.sort((a, b) => new Date(a.kickoff_at) - new Date(b.kickoff_at));
+    return { unique, endDate };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fixtures(request) {
   const url = new URL(request.url);
   const requestedDate = url.searchParams.get('date');
@@ -56,20 +78,23 @@ async function fixtures(request) {
     : new Date().toISOString().slice(0, 10);
   const days = Math.min(Math.max(Number(url.searchParams.get('days') || 3), 1), 7);
   const endDate = addDays(startDate, days - 1);
-  const requested = url.searchParams.get('leagues');
-  const selected = requested
-    ? LEAGUES.filter(([code]) => requested.split(',').includes(code))
-    : LEAGUES;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
+  // The daily cache is warmed automatically by Cloudflare Cron. A live request
+  // falls back to a fresh feed whenever the cache is cold.
+  if (startDate === new Date().toISOString().slice(0, 10)) {
+    const cached = await caches.default.match(cacheKey(startDate));
+    if (cached) {
+      const data = await cached.json();
+      const filtered = (data.fixtures || []).filter(m => {
+        const d = String(m.kickoff_at || '').slice(0, 10);
+        return d >= startDate && d <= endDate;
+      });
+      return json({ ...data, start_date: startDate, end_date: endDate, days, count: filtered.length, fixtures: filtered, cached: true });
+    }
+  }
+
   try {
-    const results = await Promise.allSettled(
-      selected.map(([code, name]) => fetchLeague(code, name, startDate, endDate, controller.signal))
-    );
-    const matches = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
-    const unique = [...new Map(matches.map(m => [m.external_id, m])).values()];
-    unique.sort((a, b) => new Date(a.kickoff_at) - new Date(b.kickoff_at));
+    const { unique } = await fetchFresh(startDate, days);
     return json({
       ok: true,
       source: 'football fixtures feed',
@@ -77,14 +102,43 @@ async function fixtures(request) {
       end_date: endDate,
       days,
       count: unique.length,
-      fixtures: unique
+      fixtures: unique,
+      cached: false
     });
-  } finally {
-    clearTimeout(timer);
+  } catch (error) {
+    return json({ ok: false, error: 'Fixtures temporarily unavailable', detail: String(error?.message || error) }, 503);
   }
 }
 
+async function warmDailyFixtures() {
+  const today = new Date().toISOString().slice(0, 10);
+  const { unique, endDate } = await fetchFresh(today, 7);
+  const response = json({
+    ok: true,
+    source: 'football fixtures feed',
+    start_date: today,
+    end_date: endDate,
+    days: 7,
+    count: unique.length,
+    fixtures: unique,
+    cached: true,
+    updated_at: new Date().toISOString()
+  });
+  await caches.default.put(cacheKey(today), response.clone());
+  return unique.length;
+}
+
 export default {
+  async scheduled(controller, env, ctx) {
+    // Refresh the upcoming seven-day fixture list twice daily.
+    try {
+      const count = await warmDailyFixtures();
+      console.log(`daily fixture update complete: ${count} matches`);
+    } catch (error) {
+      console.error('daily fixture update failed', error);
+    }
+  },
+
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/api/fixtures') return fixtures(request);
