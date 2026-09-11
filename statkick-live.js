@@ -14,7 +14,7 @@ async function loadFixtures(force = false) {
   if (!response.ok) throw new Error(`Fixture feed returned ${response.status}`);
   const data = await response.json();
   if (!data.ok) throw new Error(data.error || 'Fixture feed returned an invalid response');
-  return data.fixtures || [];
+  return data;
 }
 
 function renderFixtures(fixtures) {
@@ -47,10 +47,21 @@ async function runFixtures(force = false) {
   if (loading) return;
   loading = true;
   try {
-    const fixtures = await loadFixtures(force);
+    const data = await loadFixtures(force);
+    const fixtures = data.fixtures || [];
     lastFixtures = fixtures;
     renderFixtures(fixtures);
     document.documentElement.dataset.fixtures = 'connected';
+
+    const poolsCreated = Number(data.sync?.pools_created || 0);
+    const syncStamp = String(data.sync?.updated_at || '');
+    if (force && data.synced && poolsCreated > 0 && syncStamp) {
+      const key = `statkick-sync-reload:${syncStamp}`;
+      if (!sessionStorage.getItem(key)) {
+        sessionStorage.setItem(key, '1');
+        setTimeout(() => window.location.reload(), 250);
+      }
+    }
   } catch (error) {
     console.error('StatKick fixtures:', error);
     const host = document.querySelector('.live-grid');
