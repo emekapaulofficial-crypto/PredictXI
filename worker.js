@@ -37,9 +37,13 @@ function normalizeEvent(event, leagueName) {
   };
 }
 
-async function fetchLeague(code, name, startDate, endDate, signal) {
-  const url = `https://site.api.espn.com/apis/site/v2/sports/soccer/${code}/scoreboard?dates=${encodeURIComponent(`${startDate}-${endDate}`)}&limit=100`;
-  const response = await fetch(url, { signal, cf: { cacheTtl: 0, cacheEverything: false } });
+async function fetchLeague(code, name, startDate, endDate) {
+  const dates = `${startDate}-${endDate}`;
+  const url = `https://site.api.espn.com/apis/site/v2/sports/soccer/${code}/scoreboard?dates=${encodeURIComponent(dates)}&limit=100`;
+  const response = await fetch(url, {
+    cache: 'no-store',
+    headers: { 'accept': 'application/json' }
+  });
   if (!response.ok) throw new Error(`${name}: upstream ${response.status}`);
   const data = await response.json();
   return (data.events || []).map(e => normalizeEvent(e, name)).filter(Boolean);
@@ -57,23 +61,28 @@ function cacheKey(startDate) {
 
 async function fetchFresh(startDate, days) {
   const endDate = addDays(startDate, days - 1);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
-  try {
-    const results = await Promise.allSettled(
-      LEAGUES.map(([code, name]) => fetchLeague(code, name, startDate, endDate, controller.signal))
-    );
-    const failures = results.filter(r => r.status === 'rejected').map(r => String(r.reason?.message || r.reason));
-    const matches = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
-    if (!matches.length && failures.length === LEAGUES.length) {
-      throw new Error(failures.join(' | '));
+  const results = [];
+
+  // Keep upstream traffic controlled instead of firing all leagues at once.
+  // This avoids intermittent upstream throttling and makes partial results usable.
+  for (const [code, name] of LEAGUES) {
+    try {
+      const fixtures = await fetchLeague(code, name, startDate, endDate);
+      results.push({ status: 'fulfilled', value: fixtures });
+    } catch (error) {
+      results.push({ status: 'rejected', reason: error });
     }
-    const unique = [...new Map(matches.map(m => [m.external_id, m])).values()];
-    unique.sort((a, b) => new Date(a.kickoff_at) - new Date(b.kickoff_at));
-    return { unique, endDate, failures };
-  } finally {
-    clearTimeout(timer);
   }
+
+  const failures = results.filter(r => r.status === 'rejected').map(r => String(r.reason?.message || r.reason));
+  const matches = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
+  if (!matches.length && failures.length === LEAGUES.length) {
+    throw new Error(`No league feed responded. ${failures.join(' | ')}`);
+  }
+
+  const unique = [...new Map(matches.map(m => [m.external_id, m])).values()];
+  unique.sort((a, b) => new Date(a.kickoff_at) - new Date(b.kickoff_at));
+  return { unique, endDate, failures };
 }
 
 async function syncFixturesToSupabase(fixtures) {
