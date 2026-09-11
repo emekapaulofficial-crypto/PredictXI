@@ -34,8 +34,8 @@ function normalizeEvent(event, leagueName) {
   };
 }
 
-async function fetchLeague(code, name, date, signal) {
-  const url = `https://site.api.espn.com/apis/site/v2/sports/soccer/${code}/scoreboard?dates=${encodeURIComponent(date)}`;
+async function fetchLeague(code, name, startDate, endDate, signal) {
+  const url = `https://site.api.espn.com/apis/site/v2/sports/soccer/${code}/scoreboard?dates=${encodeURIComponent(`${startDate}-${endDate}`)}&limit=100`;
   const response = await fetch(url, { signal });
   if (!response.ok) throw new Error(`${name}: upstream ${response.status}`);
   const data = await response.json();
@@ -54,27 +54,31 @@ async function fixtures(request) {
   const startDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate || '')
     ? requestedDate
     : new Date().toISOString().slice(0, 10);
-
-  // Keep the public fixture feed fast and reliable. The frontend only needs the next few days.
-  const days = Math.min(Math.max(Number(url.searchParams.get('days') || 3), 1), 3);
+  const days = Math.min(Math.max(Number(url.searchParams.get('days') || 3), 1), 7);
+  const endDate = addDays(startDate, days - 1);
   const requested = url.searchParams.get('leagues');
   const selected = requested
     ? LEAGUES.filter(([code]) => requested.split(',').includes(code))
     : LEAGUES;
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10000);
+  const timer = setTimeout(() => controller.abort(), 15000);
   try {
-    const dates = Array.from({ length: days }, (_, i) => addDays(startDate, i));
-    const jobs = [];
-    for (const date of dates) {
-      for (const [code, name] of selected) jobs.push(fetchLeague(code, name, date, controller.signal));
-    }
-    const results = await Promise.allSettled(jobs);
+    const results = await Promise.allSettled(
+      selected.map(([code, name]) => fetchLeague(code, name, startDate, endDate, controller.signal))
+    );
     const matches = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
     const unique = [...new Map(matches.map(m => [m.external_id, m])).values()];
     unique.sort((a, b) => new Date(a.kickoff_at) - new Date(b.kickoff_at));
-    return json({ ok: true, source: 'football fixtures feed', start_date: startDate, days, count: unique.length, fixtures: unique });
+    return json({
+      ok: true,
+      source: 'football fixtures feed',
+      start_date: startDate,
+      end_date: endDate,
+      days,
+      count: unique.length,
+      fixtures: unique
+    });
   } finally {
     clearTimeout(timer);
   }
