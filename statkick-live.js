@@ -1,10 +1,8 @@
-import { supabase } from './supabase.js';
-
 const esc = v => String(v ?? '').replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));
 
 async function loadRobotFixtures() {
   const date = new Date().toISOString().slice(0, 10);
-  const response = await fetch(`/api/fixtures?date=${date}`, { cache: 'no-store' });
+  const response = await fetch(`/api/fixtures?date=${date}&days=7`, { cache: 'no-store' });
   if (!response.ok) throw new Error(`Football agent returned ${response.status}`);
   const data = await response.json();
   return data.fixtures || [];
@@ -13,9 +11,9 @@ async function loadRobotFixtures() {
 function renderFixtures(fixtures) {
   const host = document.querySelector('.live-grid');
   if (!host) return;
-  const visible = fixtures.filter(f => f.status === 'pre' || f.status === 'post' || f.status === 'in').slice(0, 12);
+  const visible = fixtures.filter(f => f.status === 'pre' || f.status === 'in').slice(0, 12);
   if (!visible.length) {
-    host.innerHTML = `<div class="card" style="padding:20px"><p class="muted">The football robot is connected. No fixtures are scheduled for today in the connected competitions.</p></div>`;
+    host.innerHTML = `<div class="card" style="padding:20px"><p class="muted">The football robot is connected, but no upcoming fixtures were returned yet.</p><button class="btn primary" type="button" onclick="window.location.reload()">Refresh matches</button></div>`;
     return;
   }
   host.innerHTML = visible.map(f => {
@@ -40,6 +38,8 @@ async function runFootballRobot() {
     document.documentElement.dataset.footballRobot = 'connected';
   } catch (error) {
     console.error('StatKick football robot:', error);
+    const host = document.querySelector('.live-grid');
+    if (host) host.innerHTML = `<div class="card" style="padding:20px"><p class="muted">Football robot connection is temporarily unavailable. Please refresh shortly.</p></div>`;
     document.documentElement.dataset.footballRobot = 'error';
   }
 }
