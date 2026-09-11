@@ -54,14 +54,16 @@ async function fixtures(request) {
   const startDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate || '')
     ? requestedDate
     : new Date().toISOString().slice(0, 10);
-  const days = Math.min(Math.max(Number(url.searchParams.get('days') || 7), 1), 14);
+
+  // Keep the public fixture feed fast and reliable. The frontend only needs the next few days.
+  const days = Math.min(Math.max(Number(url.searchParams.get('days') || 3), 1), 3);
   const requested = url.searchParams.get('leagues');
   const selected = requested
     ? LEAGUES.filter(([code]) => requested.split(',').includes(code))
     : LEAGUES;
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
+  const timer = setTimeout(() => controller.abort(), 10000);
   try {
     const dates = Array.from({ length: days }, (_, i) => addDays(startDate, i));
     const jobs = [];
@@ -72,7 +74,7 @@ async function fixtures(request) {
     const matches = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
     const unique = [...new Map(matches.map(m => [m.external_id, m])).values()];
     unique.sort((a, b) => new Date(a.kickoff_at) - new Date(b.kickoff_at));
-    return json({ ok: true, source: 'ESPN public scoreboard feed', start_date: startDate, days, count: unique.length, fixtures: unique });
+    return json({ ok: true, source: 'football fixtures feed', start_date: startDate, days, count: unique.length, fixtures: unique });
   } finally {
     clearTimeout(timer);
   }
@@ -82,7 +84,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/api/fixtures') return fixtures(request);
-    if (url.pathname === '/api/health') return json({ ok: true, service: 'statkick-football-agent', time: new Date().toISOString() });
+    if (url.pathname === '/api/health') return json({ ok: true, service: 'statkick-football-feed', time: new Date().toISOString() });
     return env.ASSETS.fetch(request);
   }
 };
