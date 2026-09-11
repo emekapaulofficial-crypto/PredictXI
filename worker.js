@@ -42,22 +42,37 @@ async function fetchLeague(code, name, date, signal) {
   return (data.events || []).map(e => normalizeEvent(e, name)).filter(Boolean);
 }
 
+function addDays(dateString, days) {
+  const d = new Date(`${dateString}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 async function fixtures(request) {
   const url = new URL(request.url);
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('date') || '')
-    ? url.searchParams.get('date')
+  const requestedDate = url.searchParams.get('date');
+  const startDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate || '')
+    ? requestedDate
     : new Date().toISOString().slice(0, 10);
+  const days = Math.min(Math.max(Number(url.searchParams.get('days') || 7), 1), 14);
   const requested = url.searchParams.get('leagues');
   const selected = requested
     ? LEAGUES.filter(([code]) => requested.split(',').includes(code))
     : LEAGUES;
+
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
+  const timer = setTimeout(() => controller.abort(), 15000);
   try {
-    const results = await Promise.allSettled(selected.map(([code, name]) => fetchLeague(code, name, date, controller.signal)));
+    const dates = Array.from({ length: days }, (_, i) => addDays(startDate, i));
+    const jobs = [];
+    for (const date of dates) {
+      for (const [code, name] of selected) jobs.push(fetchLeague(code, name, date, controller.signal));
+    }
+    const results = await Promise.allSettled(jobs);
     const matches = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
-    matches.sort((a, b) => new Date(a.kickoff_at) - new Date(b.kickoff_at));
-    return json({ ok: true, source: 'ESPN public scoreboard feed', date, count: matches.length, fixtures: matches });
+    const unique = [...new Map(matches.map(m => [m.external_id, m])).values()];
+    unique.sort((a, b) => new Date(a.kickoff_at) - new Date(b.kickoff_at));
+    return json({ ok: true, source: 'ESPN public scoreboard feed', start_date: startDate, days, count: unique.length, fixtures: unique });
   } finally {
     clearTimeout(timer);
   }
