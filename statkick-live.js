@@ -2,13 +2,18 @@ const esc = v => String(v ?? '').replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&l
 
 let lastFixtures = null;
 let refreshTimer = null;
+let loading = false;
 
-async function loadFixtures() {
+async function loadFixtures(force = false) {
   const date = new Date().toISOString().slice(0, 10);
-  const response = await fetch(`/api/fixtures?date=${date}&days=3`, { cache: 'no-store' });
+  const suffix = force ? `&refresh=${Date.now()}` : '';
+  const response = await fetch(`/api/fixtures?date=${date}&days=7${suffix}`, {
+    cache: 'no-store',
+    headers: { 'cache-control': 'no-cache', 'pragma': 'no-cache' }
+  });
   if (!response.ok) throw new Error(`Fixture feed returned ${response.status}`);
   const data = await response.json();
-  if (!data.ok) throw new Error('Fixture feed returned an invalid response');
+  if (!data.ok) throw new Error(data.error || 'Fixture feed returned an invalid response');
   return data.fixtures || [];
 }
 
@@ -39,8 +44,10 @@ function renderFixtures(fixtures) {
 }
 
 async function runFixtures(force = false) {
+  if (loading) return;
+  loading = true;
   try {
-    const fixtures = await loadFixtures();
+    const fixtures = await loadFixtures(force);
     lastFixtures = fixtures;
     renderFixtures(fixtures);
     document.documentElement.dataset.fixtures = 'connected';
@@ -53,14 +60,16 @@ async function runFixtures(force = false) {
       host.querySelector('#fixtureRetry')?.addEventListener('click', () => runFixtures(true));
     }
     document.documentElement.dataset.fixtures = 'error';
+  } finally {
+    loading = false;
   }
 }
 
 function hydrateNewLiveGrid() {
   const host = document.querySelector('.live-grid');
-  if (!host || host.dataset.fixturesLoaded === '1') return;
+  if (!host) return;
   if (lastFixtures) renderFixtures(lastFixtures);
-  else runFixtures();
+  else if (!loading) runFixtures(false);
 }
 
 function injectStyles() {
@@ -74,7 +83,7 @@ function injectStyles() {
 function boot() {
   injectStyles();
   hydrateNewLiveGrid();
-  if (!refreshTimer) refreshTimer = setInterval(() => runFixtures(), 5 * 60 * 1000);
+  if (!refreshTimer) refreshTimer = setInterval(() => runFixtures(true), 5 * 60 * 1000);
   const app = document.querySelector('#app');
   if (app && !app.dataset.fixturesObserver) {
     app.dataset.fixturesObserver = '1';
