@@ -37,14 +37,18 @@ function normalizeEvent(event, leagueName) {
   };
 }
 
-async function fetchLeague(code, name, startDate, endDate) {
-  const dates = `${startDate}-${endDate}`;
-  const url = `https://site.api.espn.com/apis/site/v2/sports/soccer/${code}/scoreboard?dates=${encodeURIComponent(dates)}&limit=100`;
+async function fetchLeagueDay(code, name, date) {
+  // Use one calendar day per upstream request. This is more reliable than
+  // relying on a multi-day range being accepted by every ESPN league feed.
+  const url = `https://site.api.espn.com/apis/site/v2/sports/soccer/${code}/scoreboard?dates=${date.replaceAll('-', '')}&limit=100`;
   const response = await fetch(url, {
     cache: 'no-store',
-    headers: { 'accept': 'application/json' }
+    headers: {
+      'accept': 'application/json',
+      'user-agent': 'StatKick/1.0 football-fixture-service'
+    }
   });
-  if (!response.ok) throw new Error(`${name}: upstream ${response.status}`);
+  if (!response.ok) throw new Error(`${name} ${date}: upstream ${response.status}`);
   const data = await response.json();
   return (data.events || []).map(e => normalizeEvent(e, name)).filter(Boolean);
 }
@@ -60,29 +64,27 @@ function cacheKey(startDate) {
 }
 
 async function fetchFresh(startDate, days) {
-  const endDate = addDays(startDate, days - 1);
+  const dates = Array.from({ length: days }, (_, i) => addDays(startDate, i));
   const results = [];
 
-  // Keep upstream traffic controlled instead of firing all leagues at once.
-  // This avoids intermittent upstream throttling and makes partial results usable.
-  for (const [code, name] of LEAGUES) {
-    try {
-      const fixtures = await fetchLeague(code, name, startDate, endDate);
-      results.push({ status: 'fulfilled', value: fixtures });
-    } catch (error) {
-      results.push({ status: 'rejected', reason: error });
-    }
+  // Two requests at a time keeps the feed responsive without creating a burst.
+  for (let i = 0; i < LEAGUES.length; i += 1) {
+    const batch = LEAGUES.slice(i, i + 2);
+    const batchResults = await Promise.allSettled(
+      batch.flatMap(([code, name]) => dates.map(date => fetchLeagueDay(code, name, date)))
+    );
+    results.push(...batchResults);
   }
 
   const failures = results.filter(r => r.status === 'rejected').map(r => String(r.reason?.message || r.reason));
   const matches = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
-  if (!matches.length && failures.length === LEAGUES.length) {
-    throw new Error(`No league feed responded. ${failures.join(' | ')}`);
+  if (!matches.length && failures.length === LEAGUES.length * dates.length) {
+    throw new Error(`No football fixture feed responded. ${failures.slice(0, 8).join(' | ')}`);
   }
 
   const unique = [...new Map(matches.map(m => [m.external_id, m])).values()];
   unique.sort((a, b) => new Date(a.kickoff_at) - new Date(b.kickoff_at));
-  return { unique, endDate, failures };
+  return { unique, endDate: dates.at(-1), failures };
 }
 
 async function syncFixturesToSupabase(fixtures) {
@@ -146,6 +148,7 @@ async function fixtures(request) {
       fixtures: unique,
       cached: false,
       partial: failures.length > 0,
+      failed_requests: failures.length,
       synced: !!sync && !sync_error,
       sync,
       sync_error
@@ -169,6 +172,7 @@ async function warmDailyFixtures() {
     fixtures: unique,
     cached: true,
     partial: failures.length > 0,
+    failed_requests: failures.length,
     synced: true,
     sync,
     updated_at: new Date().toISOString()
