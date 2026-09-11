@@ -8,6 +8,8 @@ const LEAGUES = [
   ['uefa.europa', 'Europa League']
 ];
 
+const SUPABASE_URL = 'https://iixnmsdysfjtzdfcqczx.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_BzaxZdqd0DHhXe4wRPs3nQ_yZvuqgz4';
 const CACHE_TTL_SECONDS = 60 * 60 * 6;
 const json = (body, status = 200, extra = {}) => new Response(JSON.stringify(body), {
   status,
@@ -74,6 +76,25 @@ async function fetchFresh(startDate, days) {
   }
 }
 
+async function syncFixturesToSupabase(fixtures) {
+  if (!fixtures.length) return { ok: true, fixtures_synced: 0, pools_created: 0 };
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/sync_fixture_feed`, {
+    method: 'POST',
+    headers: {
+      apikey: SUPABASE_PUBLISHABLE_KEY,
+      Authorization: `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
+      'content-type': 'application/json',
+      'cache-control': 'no-cache'
+    },
+    body: JSON.stringify({ p_fixtures: fixtures })
+  });
+  const text = await response.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { error: text }; }
+  if (!response.ok) throw new Error(`Supabase sync ${response.status}: ${data?.message || data?.error || text}`);
+  return data;
+}
+
 async function fixtures(request) {
   const url = new URL(request.url);
   const requestedDate = url.searchParams.get('date');
@@ -98,6 +119,14 @@ async function fixtures(request) {
 
   try {
     const { unique, failures } = await fetchFresh(startDate, days);
+    let sync = null;
+    let sync_error = null;
+    try {
+      sync = await syncFixturesToSupabase(unique);
+    } catch (error) {
+      sync_error = String(error?.message || error);
+      console.error('Supabase fixture sync failed', sync_error);
+    }
     return json({
       ok: true,
       source: 'football fixtures feed',
@@ -107,7 +136,10 @@ async function fixtures(request) {
       count: unique.length,
       fixtures: unique,
       cached: false,
-      partial: failures.length > 0
+      partial: failures.length > 0,
+      synced: !!sync && !sync_error,
+      sync,
+      sync_error
     }, 200, { 'cache-control': 'no-store' });
   } catch (error) {
     return json({ ok: false, error: 'Fixtures temporarily unavailable', detail: String(error?.message || error) }, 503, { 'cache-control': 'no-store' });
@@ -117,6 +149,7 @@ async function fixtures(request) {
 async function warmDailyFixtures() {
   const today = new Date().toISOString().slice(0, 10);
   const { unique, endDate, failures } = await fetchFresh(today, 7);
+  const sync = await syncFixturesToSupabase(unique);
   const response = json({
     ok: true,
     source: 'football fixtures feed',
@@ -127,6 +160,8 @@ async function warmDailyFixtures() {
     fixtures: unique,
     cached: true,
     partial: failures.length > 0,
+    synced: true,
+    sync,
     updated_at: new Date().toISOString()
   }, 200, { 'cache-control': `public, max-age=${CACHE_TTL_SECONDS}` });
   await caches.default.put(cacheKey(today), response.clone());
