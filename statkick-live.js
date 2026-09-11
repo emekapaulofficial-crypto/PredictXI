@@ -1,20 +1,26 @@
 const esc = v => String(v ?? '').replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));
 
+let lastFixtures = null;
+let refreshTimer = null;
+
 async function loadRobotFixtures() {
   const date = new Date().toISOString().slice(0, 10);
   const response = await fetch(`/api/fixtures?date=${date}&days=7`, { cache: 'no-store' });
   if (!response.ok) throw new Error(`Football agent returned ${response.status}`);
   const data = await response.json();
+  if (!data.ok) throw new Error('Football agent returned an invalid response');
   return data.fixtures || [];
 }
 
 function renderFixtures(fixtures) {
   const host = document.querySelector('.live-grid');
-  if (!host) return;
+  if (!host) return false;
+  host.dataset.robotLoaded = '1';
   const visible = fixtures.filter(f => f.status === 'pre' || f.status === 'in').slice(0, 12);
   if (!visible.length) {
-    host.innerHTML = `<div class="card" style="padding:20px"><p class="muted">The football robot is connected, but no upcoming fixtures were returned yet.</p><button class="btn primary" type="button" onclick="window.location.reload()">Refresh matches</button></div>`;
-    return;
+    host.innerHTML = `<div class="card" style="padding:20px"><p class="muted">The football robot is connected, but no upcoming fixtures were returned yet.</p><button class="btn primary" type="button" id="robotRefresh">Refresh matches</button></div>`;
+    host.querySelector('#robotRefresh')?.addEventListener('click', () => runFootballRobot(true));
+    return true;
   }
   host.innerHTML = visible.map(f => {
     const when = new Date(f.kickoff_at);
@@ -29,19 +35,32 @@ function renderFixtures(fixtures) {
       <small class="muted">${when.toLocaleString('en-NG',{dateStyle:'medium',timeStyle:'short'})}</small>
     </article>`;
   }).join('');
+  return true;
 }
 
-async function runFootballRobot() {
+async function runFootballRobot(force = false) {
   try {
     const fixtures = await loadRobotFixtures();
+    lastFixtures = fixtures;
     renderFixtures(fixtures);
     document.documentElement.dataset.footballRobot = 'connected';
   } catch (error) {
     console.error('StatKick football robot:', error);
     const host = document.querySelector('.live-grid');
-    if (host) host.innerHTML = `<div class="card" style="padding:20px"><p class="muted">Football robot connection is temporarily unavailable. Please refresh shortly.</p></div>`;
+    if (host) {
+      host.dataset.robotLoaded = '1';
+      host.innerHTML = `<div class="card" style="padding:20px"><p class="muted">Football robot connection is temporarily unavailable. Please refresh shortly.</p><button class="btn primary" type="button" id="robotRetry">Try again</button></div>`;
+      host.querySelector('#robotRetry')?.addEventListener('click', () => runFootballRobot(true));
+    }
     document.documentElement.dataset.footballRobot = 'error';
   }
+}
+
+function hydrateNewLiveGrid() {
+  const host = document.querySelector('.live-grid');
+  if (!host || host.dataset.robotLoaded === '1') return;
+  if (lastFixtures) renderFixtures(lastFixtures);
+  else runFootballRobot();
 }
 
 function injectStyles() {
@@ -54,8 +73,14 @@ function injectStyles() {
 
 function boot() {
   injectStyles();
-  runFootballRobot();
-  setInterval(runFootballRobot, 5 * 60 * 1000);
+  hydrateNewLiveGrid();
+  if (!refreshTimer) refreshTimer = setInterval(() => runFootballRobot(), 5 * 60 * 1000);
+  const app = document.querySelector('#app');
+  if (app && !app.dataset.robotObserver) {
+    app.dataset.robotObserver = '1';
+    const observer = new MutationObserver(() => queueMicrotask(hydrateNewLiveGrid));
+    observer.observe(app, { childList: true, subtree: true });
+  }
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
