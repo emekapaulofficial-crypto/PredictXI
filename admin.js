@@ -3,7 +3,7 @@ const app=document.querySelector('#admin-app');
 const PDFJS=window.pdfjsLib;
 if(PDFJS) PDFJS.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.js';
 function esc(value=''){return String(value).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','\"':'&quot;'}[c]));}
-function money(v){return `₦${Number(v||0).toLocaleString('en-NG',{maximumFractionDigits:2})`;}
+function money(v){return `₦${Number(v||0).toLocaleString('en-NG',{maximumFractionDigits:2})}`;}
 async function session(){return (await supabase.auth.getSession()).data.session;}
 function loginView(message=''){
  app.innerHTML=`<div class="wrap"><section class="card login-card"><h1>StatKick Admin</h1><p class="muted">Private administration portal</p><form id="login-form" class="form"><label>Email<input id="login-email" class="input" type="email" autocomplete="username" required></label><label>Password<input id="login-password" class="input" type="password" autocomplete="current-password" required></label><button type="submit">Sign in</button></form><div class="message">${esc(message)}</div></section></div>`;
