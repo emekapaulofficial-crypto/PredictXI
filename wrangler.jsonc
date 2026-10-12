@@ -1,8 +1,11 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "statkick",
+  "name": "black-queen-9b5b",
   "compatibility_date": "2026-09-11",
   "main": "worker.js",
+  "triggers": {
+    "crons": ["0 * * * *"]
+  },
   "assets": {
     "directory": ".",
     "binding": "ASSETS",
